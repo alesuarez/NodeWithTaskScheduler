@@ -3,6 +3,7 @@
 #include <ESP8266HTTPClient.h>
 #include <PubSubClient.h>
 #include <ESP8266WiFi.h>
+#include <CircularBuffer.h>
 
 #include "secrets.h"
 
@@ -13,10 +14,13 @@ void setupWifi();
 void setupGpio();
 void setupMqttBroker();
 
+void sendBroker(String);
 void send(String);
 
 void keepWiFiAlive();
 void checkDoorStatus();
+void sendMqtt();
+void keepMqttAlive();
 
 char msg[25];
 
@@ -24,11 +28,17 @@ void callback(char *, byte *, unsigned int);
 
 Task wifiTask(5000, TASK_FOREVER, &keepWiFiAlive);
 Task checkDoorTask(1000, TASK_FOREVER, &checkDoorStatus);
+Task sendMqttTask(3000, TASK_FOREVER, &sendMqtt);
+Task mqttTask(5000, TASK_FOREVER, &keepMqttAlive);
 
 WiFiClient  wifiClient;
 PubSubClient client(wifiClient);
 
 Scheduler scheduler;
+
+boolean isConnectionAvailable = false;
+
+CircularBuffer<String*, 5> buffer;
 
 void setup() {
   Serial.begin(115200);
@@ -41,9 +51,13 @@ void setup() {
 
   scheduler.addTask(wifiTask);
   scheduler.addTask(checkDoorTask);
+  scheduler.addTask(sendMqttTask);
+  scheduler.addTask(mqttTask);
 
   wifiTask.enable();
   checkDoorTask.enable();
+  sendMqttTask.enable();
+  mqttTask.enable();
 }
 
 void loop() {
@@ -95,28 +109,29 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.println("");
 }
 
-void send(String text) {
-  if (!client.connected()) {
-		Serial.println("Mqtt not connected");
-    String clientId = "IOTICOS_H_W_";
-    clientId += String(random(0xffff), HEX);
-		if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
-			Serial.println("Conectado!");
-			//if(client.subscribe(root_topic_subscribe, QoS_LEVEL)){
-      if(client.subscribe(root_topic_subscribe)){
-				Serial.println("Suscripcion ok");
-			} else {
-				Serial.println("fallo Suscripciión");
-			}
-		} else {
-			Serial.println(" Intentamos de nuevo en 5 segundos");
-		}
-	} else {
+void sendMqtt() {
+  if (!buffer.isEmpty() && isConnectionAvailable) {
+    String sendToBroker = *(buffer.pop());
+    Serial.print("Send mqtt pepaso");
+    Serial.println(sendToBroker);
+    sendBroker(sendToBroker);
+  }
+}
+
+void sendBroker(String text) {
     Serial.print("Sending to mqtt: ");
     Serial.println(text); 
 		text.toCharArray(msg, 25);
 		client.publish(root_topic_publish_front_door_status, msg);
-	}
+}
+
+void send(String text) {
+  if (buffer.isFull()) {
+    buffer.pop();
+  }
+  String *newText = new String(text);
+  Serial.print("newText");
+  buffer.push(newText);
 }
 
 void checkDoorStatus() {
@@ -137,6 +152,7 @@ void checkDoorStatus() {
 void keepWiFiAlive() {
   static int count = 0;
   if (WiFi.status() != WL_CONNECTED) {
+    isConnectionAvailable = false;
     Serial.println("Trying to connect..");
     if (count > 10) {
       WiFi.begin(ssid, password);
@@ -144,7 +160,30 @@ void keepWiFiAlive() {
     }
     count++;
   } else {
+    isConnectionAvailable = true;
     Serial.println("Wifi connected");
     send("Wifi connected");
   }
+}
+
+void keepMqttAlive() {
+  if (!client.connected()) {
+    isConnectionAvailable = false;
+    Serial.println("Mqtt not connected");
+    String clientId = "IOTICOS_H_W_";
+    clientId += String(random(0xffff), HEX);
+    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+      Serial.println("Conectado!");
+      //if(client.subscribe(root_topic_subscribe, QoS_LEVEL)){
+      if(client.subscribe(root_topic_subscribe)){
+        Serial.println("Suscripcion ok");
+        isConnectionAvailable = true;
+      } else {
+        Serial.println("fallo Suscripciión");
+      }
+    } else {
+      Serial.println(" Intentamos de nuevo en 5 segundos");
+    }
+  }
+  Serial.println("Mqtt is alive");
 }
