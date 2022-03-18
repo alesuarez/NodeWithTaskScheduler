@@ -4,11 +4,13 @@
 #include <PubSubClient.h>
 #include <ESP8266WiFi.h>
 #include <CircularBuffer.h>
+#include <WiFiClient.h>
+#include <ArduinoJson.h>
 
 #include "secrets.h"
-
-#define ESP8266_GPIO4             4
-#define DOOR_OPEN                 1
+#include "setup.h"
+#include "commons.h"
+#include "time.h"
 
 void setupWifi();
 void setupGpio();
@@ -22,6 +24,15 @@ void checkDoorStatus();
 void sendMqtt();
 void keepMqttAlive();
 
+String getTimestamp() ;
+
+void processStatus();
+void processAlarm(int);
+int getCmd(String);
+int getTime(String);
+
+void processMessage(String);
+
 char msg[25];
 
 void callback(char *, byte *, unsigned int);
@@ -32,11 +43,12 @@ Task sendMqttTask(3000, TASK_FOREVER, &sendMqtt);
 Task mqttTask(5000, TASK_FOREVER, &keepMqttAlive);
 
 WiFiClient  wifiClient;
+HTTPClient http;
 PubSubClient client(wifiClient);
 
 Scheduler scheduler;
 
-boolean isConnectionAvailable = false;
+boolean isConnectionAvailable = false; //todo: create a function
 
 CircularBuffer<String*, 5> buffer;
 
@@ -47,6 +59,8 @@ void setup() {
   setupMqttBroker();
   setupGpio();
   
+   Serial.println(getTimestamp());
+
   scheduler.init();
 
   scheduler.addTask(wifiTask);
@@ -77,7 +91,7 @@ void setupWifi() {
 
 void setupGpio() {
   Serial.println("Configurando GPIO");  
-  pinMode(ESP8266_GPIO4, INPUT_PULLUP );        // Input pin.
+  pinMode(SENSOR_PIN, INPUT_PULLUP );        // Input pin.
   Serial.println("Configuracion de GPIO finalizada exitosamente");
 }
 
@@ -102,6 +116,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 	Serial.print(topic);
 	Serial.println("");
 	incoming.trim();
+  processMessage(incoming);
   Serial.println("");
   Serial.println("");
   Serial.println(incoming);
@@ -136,7 +151,7 @@ void send(String text) {
 
 void checkDoorStatus() {
   static int previusStatus = 0;
-  int doorStatus = digitalRead(ESP8266_GPIO4);
+  int doorStatus = digitalRead(SENSOR_PIN);
   Serial.println(doorStatus);
   if (doorStatus ^ previusStatus) {
     if (doorStatus == DOOR_OPEN) {
@@ -186,4 +201,85 @@ void keepMqttAlive() {
     }
   }
   Serial.println("Mqtt is alive");
+}
+
+String getTimestamp() {
+    String timeS = "";
+    
+    http.begin(wifiClient, "http://worldtimeapi.org/api/timezone/America/Argentina/Tucuman");
+    int httpCode = http.GET();
+    if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+          String payload = http.getString();
+          int beginS = payload.indexOf("datetime");
+          int endS = payload.indexOf("day_of_week");
+          timeS = payload.substring(beginS + 11, endS - 3);    
+    }
+    return timeS;
+}
+
+void processMessage(String msg) {
+    int cmd = getCmd(msg);
+    switch (cmd) {
+        case CMD_STATUS:
+          Serial.println("status");
+            processStatus();
+            break;
+        case CMD_ALARM:
+            int time = getTime(msg);
+            Serial.print("Alarm: ");
+            Serial.println(time);
+            processAlarm(time);
+            break;
+    }
+
+}
+
+void processStatus() {
+
+}
+
+String buildStatus() {
+    String output;
+    StaticJsonDocument<256> doc;
+
+    doc["cmd"] = 0;
+    doc["timeStamp"] = "2022-03-17T17:23:42.860254-05:00";
+
+    JsonArray devices = doc.createNestedArray("devices");
+
+    JsonObject devices_0 = devices.createNestedObject();
+    devices_0["id"] = "A1";
+    devices_0["status"] = 0;
+
+    JsonObject devices_1 = devices.createNestedObject();
+    devices_1["id"] = "B1";
+    devices_1["status"] = 1;
+
+    serializeJson(doc, output);
+
+    return output;
+}
+
+void processAlarm(int time) {
+
+}
+
+int getCmd(String msg) {
+  Serial.print("cmd: ");
+  StaticJsonDocument<32> doc;
+
+  DeserializationError error = deserializeJson(doc, msg);
+
+  if (error) {
+      Serial.print(F("deserializeJson() failed: "));
+      Serial.println(error.f_str());
+      return -1;
+  }
+  int cmd =  doc["cmd"];
+  Serial.println(cmd);
+  return cmd; // 0
+}
+
+int getTime(String msg) {
+    return 0;
 }
